@@ -91,7 +91,7 @@ class ObjectSegmentation:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             rospy.loginfo(f"Received image of shape: {frame.shape}")
 
-            results = self.model(frame,show=False)
+            results = self.model(frame,show=True)
 
             # Create a combined mask for all detected objects
             combined_mask = np.zeros(frame.shape[:2], dtype=np.uint8)
