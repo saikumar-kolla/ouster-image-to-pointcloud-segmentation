@@ -112,6 +112,7 @@ class ObjectSegmentation:
                 if self.latest_pcl is not None and self.latest_range_image is not None:
                     pc_msg=self.extract_filtered_points(combined_mask, self.latest_range_image, self.latest_pcl)
                     self.filtered_pub.publish(pc_msg)
+                    rospy.loginfo("Point cloud published successfully.")
 
                 else:
                     rospy.logwarn("No point cloud or range image data available.")
@@ -162,38 +163,26 @@ class ObjectSegmentation:
 
         try:
             #Step 1: Destagger the range image first
-            destaggered_image = client.destagger(self.sensor_info, range_image, inverse=True)
+
+            mask_bool = mask.astype(bool)
+            roi_range_image = np.where(mask_bool, range_image, np.nan)
+            destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
 
             # Step 2: Apply the mask to the destaggered range image
-            mask_bool = mask.astype(bool)
-            roi_range_image = np.where(mask_bool, destaggered_image, np.nan)
+
 
             # Step 3: Convert the masked range image to XYZ points
-            xyz_points = self.xyzlut(roi_range_image).reshape(-1, 3)
+            xyz_points = self.xyzlut(destaggered_image).reshape(-1, 3)
 
             # Step 4: Remove NaN values (invalid points) before publishing
             valid_points = xyz_points[~np.isnan(xyz_points).any(axis=1)]
 
-
-            # Ensure only one filtered point cloud is published
-            if len(valid_points) == 0:
-                rospy.logwarn("No valid points found in the filtered point cloud.")
-                return
-
-            rospy.loginfo(f"Publishing {len(valid_points)} valid XYZ points.")
-
-            # Define point cloud fields
-            fields = [
-                PointField('x', 0, PointField.FLOAT32, 1),
-                PointField('y', 4, PointField.FLOAT32, 1),
-                PointField('z', 8, PointField.FLOAT32, 1),
-            ]
-
-            # Create a PointCloud2 message and publish
-            header = Header(stamp=pcl_msg.header.stamp, frame_id="os_sensor")
-            pc_msg = pc2.create_cloud(header, fields, valid_points)
-            rospy.loginfo("Filtered point cloud published successfully.")
-            return pc_msg
+            # Create PointCloud2 message
+            header = rospy.Header()
+            header.stamp = rospy.Time.now()
+            header.frame_id = 'os_sensor'
+            point_cloud = pc2.create_cloud_xyz32(header, valid_points)
+            return point_cloud
             #self.filtered_pub.publish(pc_msg)
 
   

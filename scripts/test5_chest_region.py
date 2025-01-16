@@ -26,7 +26,7 @@ class HandSegmentation:
         self.metadata_sub = rospy.Subscriber("/ouster/metadata", std_msgs.msg.String, self.metadata_callback)
 
         # Publisher for segmented hand point cloud
-        self.hand_pub = rospy.Publisher("/filtered_hand_points", PointCloud2, queue_size=1)
+        self.chest_pub = rospy.Publisher("/filtered_hand_points", PointCloud2, queue_size=1)
 
         # Store latest point cloud and range image
         self.latest_pcl = None
@@ -37,13 +37,12 @@ class HandSegmentation:
         self.metadata = None
         self.xyzlut = None  # XYZ lookup table
 
+
         # Timeout parameters for metadata
         self.metadata_received = False
         self.metadata_timeout = 30
         self.metadata_start_time = time.time()
 
-        # Left arm keypoint indices (shoulder, elbow, wrist)
-        self.left_hand_indices = [5, 7, 9]
 
         # Counter for logging frequency
         self.log_counter = 0
@@ -63,11 +62,13 @@ class HandSegmentation:
     def store_pcl(self, pcl_msg):
         """Store the latest point cloud message"""
         self.latest_pcl = pcl_msg
+        
+
+
 
     def range_image_callback(self, msg):
         try:
             range_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
-            # https://github.com/ouster-lidar/ouster-ros/issues/250#issuecomment-1801350711 read this for more info on multiplying by 4
             self.latest_range_image = range_image*4
             self.log_counter += 1
             if self.log_counter % 10 == 0:
@@ -107,18 +108,18 @@ class HandSegmentation:
                         continue
 
                     # Extract hand region mask
-                    mask = self.get_hand_region_mask(keypoints, frame.shape[:2])
+                    mask = self.get_chest_region_mask(keypoints, frame.shape[:2])
                     if mask is not None:
                         combined_mask = cv2.bitwise_or(combined_mask, mask)
                         detected = True
 
             if detected:
                 self.visualize_mask(combined_mask)
-                rospy.loginfo("Hand region mask created successfully.")
+                rospy.loginfo("Chest region mask created successfully.")
 
                 if self.latest_pcl is not None and self.latest_range_image is not None:
                     filtered_points = self.extract_filtered_points(combined_mask, self.latest_range_image, self.latest_pcl)
-                    self.hand_pub.publish(filtered_points)
+                    self.chest_pub.publish(filtered_points)
                 
 
                 else:
@@ -128,83 +129,41 @@ class HandSegmentation:
             rospy.logerr(f"Error processing image: {e}")
             rospy.logerr(f"Error details: {type(e).__name__}, {str(e)}")
 
-    def get_hand_region_mask(self, keypoints, image_shape):
-        try:
-            # Extract keypoints
-            shoulder_x, shoulder_y = keypoints[5, :2]
-            elbow_x, elbow_y = keypoints[7, :2]
-            wrist_x, wrist_y = keypoints[9, :2]
-            confidences = keypoints[[5, 7, 9], 2]
+    def get_chest_region_mask(self, keypoints, image_shape):
+        """Create a mask for the chest region using keypoints"""
+        left_shoulder_idx = 5
+        right_shoulder_idx = 6
+        left_hip_idx = 11
+        right_hip_idx = 12
 
-            if np.all(confidences > 0.5):
-                mask = np.zeros(image_shape[:2], dtype=np.uint8)
+        # Get keypoint coordinates
+        left_shoulder = keypoints[left_shoulder_idx][:2]
+        right_shoulder = keypoints[right_shoulder_idx][:2]
+        left_hip = keypoints[left_hip_idx][:2]
+        right_hip = keypoints[right_hip_idx][:2]
 
-                # Calculate dynamic thickness
-                upper_arm_length = np.linalg.norm(np.array([shoulder_x, shoulder_y]) - np.array([elbow_x, elbow_y]))
-                forearm_length = np.linalg.norm(np.array([elbow_x, elbow_y]) - np.array([wrist_x, wrist_y]))
-                thickness = int(0.1 * (upper_arm_length + forearm_length))
+        # Expand the polygon by a margin to cover more points
 
-                # Ensure thickness is within valid range
-                if thickness <= 0:
-                    thickness = 1  # Set to default value if out of range
+        chest_polygon = np.array([
+            left_shoulder,
+            right_shoulder,
+            right_hip,
+            left_hip
+        ], dtype=np.int32)
 
-                # Convert keypoints to integers
-                shoulder = (int(shoulder_x), int(shoulder_y))
-                elbow = (int(elbow_x), int(elbow_y))
-                wrist = (int(wrist_x), int(wrist_y))
+        # Create a blank mask
+        mask = np.zeros(image_shape[:2], dtype=np.uint8)
 
-                # Calculate perpendicular vectors for thickness
-                def perpendicular_vector(p1, p2, thickness):
-                    direction = np.array([p2[1] - p1[1], p1[0] - p2[0]])
-                    direction = direction / np.linalg.norm(direction) * thickness
-                    return direction
+        # Fill the polygon to create the chest mask
+        cv2.fillPoly(mask, [chest_polygon], 255)
 
-                # Calculate polygon points for upper arm
-                upper_arm_perp = perpendicular_vector(shoulder, elbow, thickness)
-                upper_arm_polygon = np.array([
-                    shoulder + upper_arm_perp,
-                    shoulder - upper_arm_perp,
-                    elbow - upper_arm_perp,
-                    elbow + upper_arm_perp
-                ], dtype=np.int32)
-
-                # Calculate polygon points for forearm
-                forearm_perp = perpendicular_vector(elbow, wrist, thickness)
-                forearm_polygon = np.array([
-                    elbow + forearm_perp,
-                    elbow - forearm_perp,
-                    wrist - forearm_perp,
-                    wrist + forearm_perp
-                ], dtype=np.int32)
-
-                # Draw polygons to create the mask
-                cv2.fillConvexPoly(mask, upper_arm_polygon, 255)
-                cv2.fillConvexPoly(mask, forearm_polygon, 255)
-
-                # Extend the mask to cover the hand
-                direction = np.array([wrist_x - elbow_x, wrist_y - elbow_y])
-                direction = direction / np.linalg.norm(direction)
-                hand_tip = np.array([wrist_x, wrist_y]) + 5 * direction
-                hand_tip = (int(hand_tip[0]), int(hand_tip[1]))
-
-                # Draw a circle at the hand tip
-                cv2.circle(mask, hand_tip, 5, 255, -1)
-
-                rospy.loginfo(f"Created mask with shape {mask.shape}")
-                return mask
-            else:
-                rospy.logwarn("Low confidence in hand keypoints.")
-                return None
-        except Exception as e:
-            rospy.logerr(f"Error in get_hand_region_mask: {e}")
-            return None
-
+        return mask
 
     def visualize_mask(self, mask):
         # Convert mask to a three-channel image with color
         mask_visual = np.zeros((mask.shape[0], mask.shape[1], 3), dtype=np.uint8)
         mask_visual[mask > 0] = [0, 0, 255]  # Red color for the mask
-        cv2.imshow("Hand Mask", mask_visual)
+        cv2.imshow("Chest Mask", mask_visual)
         cv2.waitKey(1)  # Use waitKey(1) to avoid blocking
 
     def extract_filtered_points(self, mask, range_image, pcl_msg):
@@ -227,31 +186,24 @@ class HandSegmentation:
 
             # Step 4: Filter out NaN values
             valid_points = xyz_points[~np.isnan(xyz_points).any(axis=1)]
-            # Ensure there are valid points before creating the point cloud message
-            if len(valid_points) == 0:
-                rospy.logwarn("No valid points found in the filtered point cloud.")
-                return
 
-            # Convert valid points to float32 to avoid type conversion issues
-            #valid_points = valid_points.astype(np.float32)
-
-            rospy.loginfo(f"Publishing {len(valid_points)} unique valid XYZ points.")
+            rospy.loginfo(f"Original range image shape: {range_image.shape}")
+            rospy.loginfo(f"Mask shape: {mask.shape}")
+            rospy.loginfo(f"Non-NaN points in XYZ points: {np.count_nonzero(~np.isnan(xyz_points))}")
+            rospy.loginfo(f"Valid points after masking: {len(valid_points)}")
 
 
-            # Define point cloud fields
-            fields = [
-                PointField('x', 0, PointField.FLOAT32, 1),
-                PointField('y', 4, PointField.FLOAT32, 1),
-                PointField('z', 8, PointField.FLOAT32, 1),
-            ]
+            # Create PointCloud2 message
+            header = rospy.Header()
+            header.stamp = rospy.Time.now()
+            header.frame_id = 'os_sensor'
+            point_cloud = pc2.create_cloud_xyz32(header, valid_points)
+            return point_cloud
+            #self.filtered_pub.publish(pc_msg)
 
-            # Create a PointCloud2 message and publish
-            header = Header(stamp=pcl_msg.header.stamp, frame_id="os_sensor")
-            pc_msg = pc2.create_cloud(header, fields, valid_points)
-            rospy.loginfo("Filtered point cloud published successfully.")
-            return pc_msg
+
+
             
-
         except Exception as e:
             rospy.logerr(f"Error filtering points: {e}")
 
