@@ -1,5 +1,5 @@
 # Point Cloud Generation from segmented Range Image using Ouster SDK and ROS Packages
-This repository demonstrates the process of generating point cloud data from range images captured by the Ouster LiDAR sensor. The pipeline utilizes the Ouster SDK and ROS packages to convert sensor data into meaningful 3D point clouds.
+This repository demonstrates the process of generating a segmented ROI pointcloud from reflective and range images captured by the Ouster LiDAR sensor. The pipeline utilizes the Ouster SDK, OpenCV, Open3D and ROS packages to convert sensor data into meaningful 3D point clouds.
 
 ## YOLO-Pose Detection on LiDAR Reflective Image for Generating Segmentation Mask
 The image below showcases YOLO-Pose detection applied on a LiDAR reflective image. The detected object's pose is accurately identified and the bounding box will be used as a mask.
