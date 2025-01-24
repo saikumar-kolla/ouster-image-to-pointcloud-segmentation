@@ -1,5 +1,5 @@
 # Point Cloud Generation from segmented Range Image using Ouster SDK and ROS Packages
-This repository demonstrates the process of generating point cloud data from range images captured by the Ouster LiDAR sensor. The pipeline utilizes the Ouster SDK and ROS packages to convert sensor data into meaningful 3D point clouds.
+This repository demonstrates the process of generating a segmented ROI pointcloud from reflective and range images captured by the Ouster LiDAR sensor. The pipeline utilizes the Ouster SDK, OpenCV, Open3D and ROS packages to convert sensor data into meaningful 3D point clouds.
 
 ## YOLO-Pose Detection on LiDAR Reflective Image for Generating Segmentation Mask
 The image below showcases YOLO-Pose detection applied on a LiDAR reflective image. The detected object's pose is accurately identified and the bounding box will be used as a mask.
@@ -18,14 +18,16 @@ The following image represents the raw point cloud data generated from the Ouste
 ## Segmented Point Cloud Data
 This image illustrates the segmented point cloud data of a detected object. The segmentation was achieved by mapping the reflective image to the corresponding range image. Utilizing a lookup table derived from the sensor's metadata I mapped the segmented range_image pixels to the 3d point cloud.
 
-![Segmented Point Cloud](https://github.com/user-attachments/assets/515ec1ce-eb13-4dc8-964a-0b841f8a140f)
+![Segmented Point Cloud]![segmented_pc](https://github.com/user-attachments/assets/e7785f50-7ddb-4b20-9015-536f1ce21406)
+
 
 ---
 
 ## Combined Point Cloud: Original and Segmented
 The image below shows the combined point cloud, including the original and segmented point clouds. This visualization highlights the effectiveness of the segmentation process in isolating objects within the 3D space.
 
-![Combined Point Cloud](https://github.com/user-attachments/assets/ce05d154-5739-4307-840c-b5f0f46f9f2a)
+![Combined Point Cloud]![original_segmented_PC](https://github.com/user-attachments/assets/a68db6b8-6b53-429f-a5ec-2ef4ad023d0a)
+
 
 ---
 ## Conclusion
