@@ -119,6 +119,8 @@ class HandSegmentation:
                 if self.latest_pcl is not None and self.latest_range_image is not None:
                     filtered_points = self.extract_filtered_points(combined_mask, self.latest_range_image, self.latest_pcl)
                     self.hand_pub.publish(filtered_points)
+
+
                 
 
                 else:
@@ -216,7 +218,9 @@ class HandSegmentation:
         try:
             #Step 1: Destagger the range image first
             mask_bool = mask.astype(bool)
-            roi_range_image = np.where(mask_bool, range_image, np.nan)
+            roi_range_image = np.where(mask_bool,np.nan, range_image)
+            rospy.loginfo(f"ROI range image shape: {roi_range_image.shape}")
+            rospy.loginfo(f"range image shape: {range_image.shape}")
             destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
 
             # Step 2: Convert the range image to XYZ points
@@ -249,6 +253,7 @@ class HandSegmentation:
             header = Header(stamp=pcl_msg.header.stamp, frame_id="os_sensor")
             pc_msg = pc2.create_cloud(header, fields, valid_points)
             rospy.loginfo("Filtered point cloud published successfully.")
+
             return pc_msg
             
 
