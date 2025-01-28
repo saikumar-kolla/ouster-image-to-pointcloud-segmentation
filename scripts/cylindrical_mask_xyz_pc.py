@@ -121,23 +121,20 @@ class HandSegmentation:
                     filtered_points = self.extract_filtered_points(combined_mask, self.latest_range_image, self.latest_pcl)
                     self.hand_pub.publish(filtered_points)
                         
-                        # # Convert ROS PointCloud2 to Open3D point cloud
-                    points_list = list(pc2.read_points(filtered_points, field_names=("x", "y", "z"), skip_nans=True))
-                    rospy.loginfo(f"Number of points in the point cloud: {len(points_list)}")
-                    o3d_cloud = o3d.geometry.PointCloud()
-                    o3d_cloud.points = o3d.utility.Vector3dVector(np.array(points_list))
-                    # Visualize the point cloud using Open3D
-                    o3d.visualization.draw_geometries([o3d_cloud])
+                    #     # # Convert ROS PointCloud2 to Open3D point cloud
+                    # points_list = list(pc2.read_points(filtered_points, field_names=("x", "y", "z"), skip_nans=True))
+                    # rospy.loginfo(f"Number of points in the point cloud: {len(points_list)}")
+
                    
 
                     
-                    # Define the save location and ensure the directory exists
-                    file_path = os.path.expanduser("~/mannequin_detection/extracted_clouds/front/filtered_hand_points.ply")
-                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    # # Define the save location and ensure the directory exists
+                    # file_path = os.path.expanduser("~/mannequin_detection/extracted_clouds/front/filtered_hand_points.ply")
+                    # os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-                    # Save the point cloud to a file
-                    o3d.io.write_point_cloud(file_path, o3d_cloud)
-                    rospy.loginfo(f"Filtered chest points saved successfully to {file_path}.")
+                    # # Save the point cloud to a file
+                    # o3d.io.write_point_cloud(file_path, o3d_cloud)
+                    # rospy.loginfo(f"Filtered chest points saved successfully to {file_path}.")
 
 
                 
@@ -235,28 +232,48 @@ class HandSegmentation:
             return
 
         try:
-            #Step 1: Destagger the range image first
+            # Step 1: Apply the mask to the range image
             mask_bool = mask.astype(bool)
-            roi_range_image = np.where(mask_bool,np.nan, range_image)
-            rospy.loginfo(f"ROI range image shape: {roi_range_image.shape}")
-            rospy.loginfo(f"range image shape: {range_image.shape}")
+
+            #checking mask coverage
+            print(f"Mask Coverage: {mask_bool.sum()} / {mask_bool.size}")
+
+            roi_range_image = np.where(mask_bool,range_image,np.nan)
+
+            #checking np.nan values in roi_range_image
+            nan_percentage = np.isnan(roi_range_image).mean() * 100
+            print(f"Percentage of NaN in ROI Range Image: {nan_percentage:.2f}%")
+
+
+            # Step 2: Destagger the range image
             destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
 
-            # Step 2: Convert the range image to XYZ points
-            xyz_points = self.xyzlut(destaggered_image).reshape(-1, 3)
+            #checking destaggering effect on np.nan values
+            print("total np.nan values after destaggering: ",np.isnan(destaggered_image).sum())
 
-            # Step 3: Apply the mask to the XYZ points
-           
+            # Replace NaN in destaggered image with a valid sentinel value
+            destaggered_image_clean = np.nan_to_num(destaggered_image, nan=0)
 
-            # Step 4: Filter out NaN values
+            #checkup what dtype is destaggered_image_clean should be float64
+            print("dtype of destaggered_image_clean: ",destaggered_image_clean.dtype)
+
+            # Pass the cleaned image to XYZLut without nan and if possible in unit32 format
+            xyz_points = self.xyzlut(destaggered_image_clean).reshape(-1, 3)
+
+            # Filter out invalid points post-conversion
             valid_points = xyz_points[~np.isnan(xyz_points).any(axis=1)]
+
+
+            o3d_cloud = o3d.geometry.PointCloud()
+            o3d_cloud.points = o3d.utility.Vector3dVector(valid_points)
+
+            # Step 5: Visualize in Open3D
+            
+            o3d.visualization.draw_geometries([o3d_cloud])
             # Ensure there are valid points before creating the point cloud message
             if len(valid_points) == 0:
                 rospy.logwarn("No valid points found in the filtered point cloud.")
                 return
-
-            # Convert valid points to float32 to avoid type conversion issues
-            #valid_points = valid_points.astype(np.float32)
 
             rospy.loginfo(f"Publishing {len(valid_points)} unique valid XYZ points.")
 

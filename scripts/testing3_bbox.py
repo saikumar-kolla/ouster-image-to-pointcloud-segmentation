@@ -113,6 +113,15 @@ class ObjectSegmentation:
                     pc_msg=self.extract_filtered_points(combined_mask, self.latest_range_image, self.latest_pcl)
                     self.filtered_pub.publish(pc_msg)
                     rospy.loginfo("Point cloud published successfully.")
+                                        
+                                        # Convert ROS PointCloud2 to Open3D point cloud
+                    points_list = list(pc2.read_points(pc_msg, field_names=("x", "y", "z"), skip_nans=True))
+                    rospy.loginfo(f"Number of points in the point cloud: {len(points_list)}")
+                    o3d_cloud = o3d.geometry.PointCloud()
+                    o3d_cloud.points = o3d.utility.Vector3dVector(np.array(points_list))
+                    # Visualize the point cloud using Open3D
+                    o3d.visualization.draw_geometries([o3d_cloud])
+
 
                 else:
                     rospy.logwarn("No point cloud or range image data available.")
@@ -165,14 +174,16 @@ class ObjectSegmentation:
             #Step 1: Destagger the range image first
 
             mask_bool = mask.astype(bool)
-            roi_range_image = np.where(mask_bool, range_image, np.nan)
+            roi_range_image = np.where(mask_bool,range_image,np.nan)
             destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
 
-            # Step 2: Apply the mask to the destaggered range image
+            # Step 2:cleaning the nan values before passing to xyzlut
+            destaggered_image_clean = np.nan_to_num(destaggered_image, nan=0)
+           
 
 
             # Step 3: Convert the masked range image to XYZ points
-            xyz_points = self.xyzlut(destaggered_image).reshape(-1, 3)
+            xyz_points = self.xyzlut(destaggered_image_clean).reshape(-1, 3)
 
             # Step 4: Remove NaN values (invalid points) before publishing
             valid_points = xyz_points[~np.isnan(xyz_points).any(axis=1)]

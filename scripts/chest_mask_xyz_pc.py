@@ -205,15 +205,20 @@ class HandSegmentation:
 
             # Step 1: Apply the mask to the range image
             mask_bool = mask.astype(bool)
-            roi_range_image = np.where(mask_bool,np.nan,range_image)
+            roi_range_image = np.where(mask_bool,range_image,np.nan)
 
             # Step 2: Destagger the range image
             destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
 
-            # Extract valid xyz points from the range image
-            xyz_points = self.xyzlut(destaggered_image).reshape(-1, 3)
+            # Step 3: Clean the NaN values before passing to xyzlut
+            destaggered_image_clean = np.nan_to_num(destaggered_image, nan=0)
+
+            # step 4: Convert the masked range image to XYZ points
+            xyz_points = self.xyzlut(destaggered_image_clean).reshape(-1, 3)
             valid_points = xyz_points[~np.isnan(xyz_points).any(axis=1)]
+            print(valid_points.shape)
             
+       
             # Ensure there are valid points before creating the point cloud message
             if len(valid_points) == 0:
                 rospy.logwarn("No valid points found in the filtered point cloud.")
@@ -225,6 +230,7 @@ class HandSegmentation:
                 PointField('x', 0, PointField.FLOAT32, 1),
                 PointField('y', 4, PointField.FLOAT32, 1),
                 PointField('z', 8, PointField.FLOAT32, 1),
+
             ]
 
             # Create a PointCloud2 message and publish

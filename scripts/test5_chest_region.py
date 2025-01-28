@@ -1,18 +1,20 @@
-import threading
+import os
 import rospy
 from sensor_msgs.msg import Image, PointCloud2
 import sensor_msgs.point_cloud2 as pc2
 from sensor_msgs.msg import PointField
+from std_msgs.msg import Header
 from cv_bridge import CvBridge
 from ouster.sdk import client
 import std_msgs.msg
-from std_msgs.msg import Header
 import json
 import numpy as np
+import pandas as pd
 import cv2
 from ultralytics import YOLO
 import time
 import open3d as o3d
+
 
 class HandSegmentation:
     def __init__(self):
@@ -26,7 +28,7 @@ class HandSegmentation:
         self.metadata_sub = rospy.Subscriber("/ouster/metadata", std_msgs.msg.String, self.metadata_callback)
 
         # Publisher for segmented hand point cloud
-        self.chest_pub = rospy.Publisher("/filtered_hand_points", PointCloud2, queue_size=1)
+        self.chest_pub = rospy.Publisher("/filtered_hand_points", PointCloud2, queue_size=10)
 
         # Store latest point cloud and range image
         self.latest_pcl = None
@@ -70,6 +72,7 @@ class HandSegmentation:
         try:
             range_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
             self.latest_range_image = range_image*4
+            
             self.log_counter += 1
             if self.log_counter % 10 == 0:
                 rospy.loginfo(f"Received range image of shape: {range_image.shape}")
@@ -120,6 +123,28 @@ class HandSegmentation:
                 if self.latest_pcl is not None and self.latest_range_image is not None:
                     filtered_points = self.extract_filtered_points(combined_mask, self.latest_range_image, self.latest_pcl)
                     self.chest_pub.publish(filtered_points)
+                 
+                    rospy.loginfo("Filtered chest points published successfully.")
+                    
+                    # Convert ROS PointCloud2 to Open3D point cloud
+                    points_list = list(pc2.read_points(filtered_points, field_names=("x", "y", "z"), skip_nans=True))
+                    rospy.loginfo(f"Number of points in the point cloud: {len(points_list)}")
+                    o3d_cloud = o3d.geometry.PointCloud()
+                    o3d_cloud.points = o3d.utility.Vector3dVector(np.array(points_list))
+                    # Visualize the point cloud using Open3D
+                    o3d.visualization.draw_geometries([o3d_cloud])
+                    cv2.waitKey(1)
+                    cv2.destroyAllWindows()
+                   
+
+                    
+                    # Define the save location and ensure the directory exists
+                    file_path = os.path.expanduser("~/mannequin_detection/extracted_clouds/front/filtered_chest_points.ply")
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+                    # Save the point cloud to a file
+                    o3d.io.write_point_cloud(file_path, o3d_cloud)
+                    rospy.loginfo(f"Filtered chest points saved successfully to {file_path}.")
                 
 
                 else:
@@ -166,46 +191,137 @@ class HandSegmentation:
         cv2.imshow("Chest Mask", mask_visual)
         cv2.waitKey(1)  # Use waitKey(1) to avoid blocking
 
+
+
     def extract_filtered_points(self, mask, range_image, pcl_msg):
-        rospy.loginfo("Extracting filtered points...")
+      
+
         if not self.sensor_info or not self.xyzlut:
             rospy.logwarn("Metadata or lookup table not ready.")
             return
 
         try:
-            #Step 1: Destagger the range image first
+            # Ensure the mask and range image have the same dimensions
+            if mask.shape != range_image.shape:
+                rospy.logerr("Mask and range image dimensions do not match.")
+                return
+
+            # Step 1: Apply the mask to the range image
             mask_bool = mask.astype(bool)
-            roi_range_image = np.where(mask_bool, range_image, np.nan)
+
+            #checking mask coverage
+            print(f"Mask Coverage: {mask_bool.sum()} / {mask_bool.size}")
+
+            roi_range_image = np.where(mask_bool,range_image,np.nan)
+
+            #checking np.nan values in roi_range_image
+            nan_percentage = np.isnan(roi_range_image).mean() * 100
+            print(f"Percentage of NaN in ROI Range Image: {nan_percentage:.2f}%")
+
+
+            # Step 2: Destagger the range image
             destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
 
-            # Step 2: Convert the range image to XYZ points
-            xyz_points = self.xyzlut(destaggered_image).reshape(-1, 3)
+            #checking destaggering effect on np.nan values
+            print("total np.nan values after destaggering: ",np.isnan(destaggered_image).sum())
 
-            # Step 3: Apply the mask to the XYZ points
-           
+            # Replace NaN in destaggered image with a valid sentinel value
+            destaggered_image_clean = np.nan_to_num(destaggered_image, nan=0)
 
-            # Step 4: Filter out NaN values
-            valid_points = xyz_points[~np.isnan(xyz_points).any(axis=1)]
+            #checkup what dtype is destaggered_image_clean should be float64
+            print("dtype of destaggered_image_clean: ",destaggered_image_clean.dtype)
 
-            rospy.loginfo(f"Original range image shape: {range_image.shape}")
-            rospy.loginfo(f"Mask shape: {mask.shape}")
-            rospy.loginfo(f"Non-NaN points in XYZ points: {np.count_nonzero(~np.isnan(xyz_points))}")
-            rospy.loginfo(f"Valid points after masking: {len(valid_points)}")
+            # Pass the cleaned image to XYZLut without nan and if possible in unit32 format
+            xyz_points = self.xyzlut(destaggered_image_clean).reshape(-1, 3)
 
-
-            # Create PointCloud2 message
-            header = rospy.Header()
-            header.stamp = rospy.Time.now()
-            header.frame_id = 'os_sensor'
-            point_cloud = pc2.create_cloud_xyz32(header, valid_points)
-            return point_cloud
-            #self.filtered_pub.publish(pc_msg)
+            # Filter out invalid points post-conversion
+            valid_xyz = xyz_points[~np.isnan(xyz_points).any(axis=1)]
 
 
+            # Create a DataFrame for valid xyz points
+            valid_xyz_df = pd.DataFrame(valid_xyz, columns=['x', 'y', 'z'])
+            print("shape",valid_xyz_df.shape)
+            valid_xyz_df.to_csv('valid_xyz_df.csv', index=False)
 
+             # Get the field information from the original point cloud
+            fields = pcl_msg.fields
+            field_names = [field.name for field in fields]
+            rospy.loginfo(f"Original point cloud fields: {field_names}")
+
+
+            # Convert original point cloud to structured numpy array
+            original_cloud_points = list(pc2.read_points(pcl_msg, skip_nans=False, field_names=field_names))
+            dtype_list = []
+            for field in fields:
+                if field.datatype == PointField.FLOAT32:
+                    dtype_list.append((field.name, np.float32))
+                elif field.datatype == PointField.FLOAT64:
+                    dtype_list.append((field.name, np.float64))
+                elif field.datatype == PointField.UINT32:
+                    dtype_list.append((field.name, np.uint32))
+                elif field.datatype == PointField.INT32:
+                    dtype_list.append((field.name, np.int32))
+                elif field.datatype == PointField.UINT8:
+                    dtype_list.append((field.name, np.uint8))
+                elif field.datatype == PointField.INT8:
+                    dtype_list.append((field.name, np.int8))
+                elif field.datatype == PointField.UINT16:
+                    dtype_list.append((field.name, np.uint16))
+                elif field.datatype == PointField.INT16:
+                    dtype_list.append((field.name, np.int16))
+                else:
+                    rospy.logwarn(f"Unsupported field datatype: {field.datatype}")
+                    dtype_list.append((field.name, np.float32))  # Default to float32 if unsupported
+
+            original_cloud_array = np.array(original_cloud_points, dtype=dtype_list)  
+            rospy.loginfo("converted pcl_msg to structured numpy array") 
+
+
+            # Create a DataFrame for the original cloud
+            original_cloud_df = pd.DataFrame(original_cloud_array)
+            print("shape",original_cloud_df.shape)
+            original_cloud_df.to_csv('original_cloud_df.csv', index=False)
+
+            # Find rows in valid_xyz_df where all values are zero
+            zero_rows_indices = valid_xyz_df[(valid_xyz_df == 0.0).all(axis=1)].index
+
+            # Set corresponding rows in original_cloud_df to zero
+            original_cloud_df.iloc[zero_rows_indices] = 0
+
+            matched_rows = original_cloud_df
+            # Save matched rows to a CSV file
+            matched_rows.to_csv('matched_rows.csv', index=False)
+            rospy.loginfo(f"Matched {len(matched_rows)} points saved to CSV.")
+
+            # Publishing Matched Rows as PointCloud2
+            if not matched_rows.empty:
+                rospy.loginfo(f"Matched {len(matched_rows)} points. Publishing filtered point cloud.")
+
+                # Convert matched rows DataFrame to structured array
+                matched_points = matched_rows.to_records(index=False)
+
+                # Define PointCloud2 fields
+                pc2_fields = []
+                offset = 0
+                for field in fields:
+                    if field.name in matched_rows.columns:
+                        pc2_fields.append(PointField(name=field.name, offset=offset, datatype=field.datatype, count=1))
+                        offset += np.dtype(dtype_list[field_names.index(field.name)][1]).itemsize
+
+                # Create PointCloud2 message
+                header = pcl_msg.header
+                filtered_cloud = pc2.create_cloud(header, pc2_fields, matched_points)
+                return filtered_cloud
+            else:
+                rospy.logwarn("No points matched. No point cloud published.")
+                return None    
             
+
         except Exception as e:
-            rospy.logerr(f"Error filtering points: {e}")
+            rospy.logerr(f"Error extracting filtered points: {e}")
+            rospy.logerr(f"Error details: {type(e).__name__}, {str(e)}")
+            return None
+
 
 
 

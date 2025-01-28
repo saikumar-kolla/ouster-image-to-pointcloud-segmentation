@@ -222,7 +222,7 @@ class HandSegmentation:
             rospy.loginfo(f"Original point cloud fields: {field_names}")
 
             # Convert original point cloud to structured numpy array
-            original_cloud_points = list(pc2.read_points(pcl_msg, skip_nans=True, field_names=field_names))
+            original_cloud_points = list(pc2.read_points(pcl_msg, skip_nans=False, field_names=field_names))
             dtype_list = []
             for field in fields:
                 if field.datatype == PointField.FLOAT32:
@@ -249,6 +249,7 @@ class HandSegmentation:
 
             # Create DataFrames for easy matching
             original_cloud_df = pd.DataFrame(original_cloud_array)
+            print(original_cloud_df.shape)
             #print(original_cloud_df.head(10))
             matched_rows = original_cloud_df[original_cloud_df['range'].isin(flattened_image)]
 
