@@ -14,6 +14,7 @@ import cv2
 from ultralytics import YOLO
 import time
 import open3d as o3d
+import matplotlib.pyplot as plt
 
 
 class HandSegmentation:
@@ -121,30 +122,15 @@ class HandSegmentation:
                 rospy.loginfo("Chest region mask created successfully.")
 
                 if self.latest_pcl is not None and self.latest_range_image is not None:
-                    filtered_points = self.extract_filtered_points(combined_mask, self.latest_range_image, self.latest_pcl)
-                    self.chest_pub.publish(filtered_points)
-                 
-                    rospy.loginfo("Filtered chest points published successfully.")
-                    
-                    # Convert ROS PointCloud2 to Open3D point cloud
-                    points_list = list(pc2.read_points(filtered_points, field_names=("x", "y", "z"), skip_nans=True))
-                    rospy.loginfo(f"Number of points in the point cloud: {len(points_list)}")
-                    o3d_cloud = o3d.geometry.PointCloud()
-                    o3d_cloud.points = o3d.utility.Vector3dVector(np.array(points_list))
-                    # Visualize the point cloud using Open3D
-                    o3d.visualization.draw_geometries([o3d_cloud])
-                    cv2.waitKey(1)
-                    cv2.destroyAllWindows()
-                   
+                    self.extract_filtered_points(combined_mask, self.latest_range_image, self.latest_pcl)
 
-                    
-                    # Define the save location and ensure the directory exists
-                    file_path = os.path.expanduser("~/mannequin_detection/extracted_clouds/front/filtered_chest_points.ply")
-                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    # # Define the save location and ensure the directory exists
+                    # file_path = os.path.expanduser("~/mannequin_detection/extracted_clouds/front/filtered_chest_points.ply")
+                    # os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-                    # Save the point cloud to a file
-                    o3d.io.write_point_cloud(file_path, o3d_cloud)
-                    rospy.loginfo(f"Filtered chest points saved successfully to {file_path}.")
+                    # # Save the point cloud to a file
+                    # o3d.io.write_point_cloud(file_path, o3d_cloud)
+                    # rospy.loginfo(f"Filtered chest points saved successfully to {file_path}.")
                 
 
                 else:
@@ -194,7 +180,6 @@ class HandSegmentation:
 
 
     def extract_filtered_points(self, mask, range_image, pcl_msg):
-      
 
         if not self.sensor_info or not self.xyzlut:
             rospy.logwarn("Metadata or lookup table not ready.")
@@ -212,32 +197,25 @@ class HandSegmentation:
             #checking mask coverage
             print(f"Mask Coverage: {mask_bool.sum()} / {mask_bool.size}")
 
-            roi_range_image = np.where(mask_bool,range_image,np.nan)
 
-            #checking np.nan values in roi_range_image
-            nan_percentage = np.isnan(roi_range_image).mean() * 100
-            print(f"Percentage of NaN in ROI Range Image: {nan_percentage:.2f}%")
+            ''' Passing staggered range image to xyz function so that we can better visualize the cloud in rviz '''
 
+            roi_range_image = np.where(mask_bool,range_image,0)
 
-            # Step 2: Destagger the range image
+            # Step 2: stagger the range image
             destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
 
-            #checking destaggering effect on np.nan values
-            print("total np.nan values after destaggering: ",np.isnan(destaggered_image).sum())
-
-            # Replace NaN in destaggered image with a valid sentinel value
-            destaggered_image_clean = np.nan_to_num(destaggered_image, nan=0)
-
-            #checkup what dtype is destaggered_image_clean should be float64
-            print("dtype of destaggered_image_clean: ",destaggered_image_clean.dtype)
-
             # Pass the cleaned image to XYZLut without nan and if possible in unit32 format
-            xyz_points = self.xyzlut(destaggered_image_clean).reshape(-1, 3)
+            xyz_points = self.xyzlut(destaggered_image).reshape(-1, 3)
+
+            ''' Directly passing destaggered range image to xyz function so that we can match with original point cloud
+            which was destaggered when published'''
+            # roi_range_image = np.where(mask_bool,range_image,0)
+            # xyz_points = self.xyzlut(roi_range_image).reshape(-1, 3)
 
             # Filter out invalid points post-conversion
             valid_xyz = xyz_points[~np.isnan(xyz_points).any(axis=1)]
-
-
+   
             # Create a DataFrame for valid xyz points
             valid_xyz_df = pd.DataFrame(valid_xyz, columns=['x', 'y', 'z'])
             print("shape",valid_xyz_df.shape)
@@ -276,6 +254,7 @@ class HandSegmentation:
             original_cloud_array = np.array(original_cloud_points, dtype=dtype_list)  
             rospy.loginfo("converted pcl_msg to structured numpy array") 
 
+            print(f"{dtype_list}")
 
             # Create a DataFrame for the original cloud
             original_cloud_df = pd.DataFrame(original_cloud_array)
@@ -288,30 +267,49 @@ class HandSegmentation:
             # Set corresponding rows in original_cloud_df to zero
             original_cloud_df.iloc[zero_rows_indices] = 0
 
-            matched_rows = original_cloud_df
+            original_cloud_filtered = original_cloud_df
             # Save matched rows to a CSV file
-            matched_rows.to_csv('matched_rows.csv', index=False)
-            rospy.loginfo(f"Matched {len(matched_rows)} points saved to CSV.")
+            original_cloud_filtered.to_csv('original_segmented_cloud.csv', index=False)
 
             # Publishing Matched Rows as PointCloud2
-            if not matched_rows.empty:
-                rospy.loginfo(f"Matched {len(matched_rows)} points. Publishing filtered point cloud.")
+            if not original_cloud_filtered.empty:
+                
+
+                # Visualize the segmented original cloud and also range image cloud in open3d
+                matched_points_np = original_cloud_filtered[['x', 'y', 'z']].to_numpy(dtype=np.float32)
+                valid_xyz_np = valid_xyz_df.to_numpy(dtype=np.float32)
+
+                original_segmented_cloud = o3d.geometry.PointCloud()
+                range_image_cloud = o3d.geometry.PointCloud()
+                original_segmented_cloud.points = o3d.utility.Vector3dVector(matched_points_np)
+                range_image_cloud.points = o3d.utility.Vector3dVector(valid_xyz_np)
+
+                # Add Colors (R, G, B) in range [0, 1]
+                original_segmented_cloud_color = [1, 0, 0]  # Red for matched cloud
+                range_image_cloud_color = [0, 1, 0]  # Green for range image cloud
+
+                original_segmented_cloud.colors = o3d.utility.Vector3dVector(np.tile(original_segmented_cloud_color, (matched_points_np.shape[0], 1)))
+                range_image_cloud.colors = o3d.utility.Vector3dVector(np.tile(range_image_cloud_color, (valid_xyz_np.shape[0], 1)))
+
+                o3d.visualization.draw_geometries([original_segmented_cloud, range_image_cloud,])
+
 
                 # Convert matched rows DataFrame to structured array
-                matched_points = matched_rows.to_records(index=False)
+                filtered_points = original_segmented_cloud.to_records(index=False)
 
                 # Define PointCloud2 fields
                 pc2_fields = []
                 offset = 0
                 for field in fields:
-                    if field.name in matched_rows.columns:
+                    if field.name in original_segmented_cloud.columns:
                         pc2_fields.append(PointField(name=field.name, offset=offset, datatype=field.datatype, count=1))
                         offset += np.dtype(dtype_list[field_names.index(field.name)][1]).itemsize
 
                 # Create PointCloud2 message
                 header = pcl_msg.header
-                filtered_cloud = pc2.create_cloud(header, pc2_fields, matched_points)
-                return filtered_cloud
+                filtered_cloud = pc2.create_cloud(header, pc2_fields, filtered_points)
+                self.chest_pub.publish(filtered_cloud)
+                rospy.loginfo("Filtered chest points published successfully.")
             else:
                 rospy.logwarn("No points matched. No point cloud published.")
                 return None    
