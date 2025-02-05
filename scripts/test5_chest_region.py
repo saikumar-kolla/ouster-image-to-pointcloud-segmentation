@@ -29,7 +29,7 @@ class HandSegmentation:
         self.metadata_sub = rospy.Subscriber("/ouster/metadata", std_msgs.msg.String, self.metadata_callback)
 
         # Publisher for segmented hand point cloud
-        self.chest_pub = rospy.Publisher("/filtered_hand_points", PointCloud2, queue_size=10)
+        self.chest_pub = rospy.Publisher("/filtered_chest_points", PointCloud2, queue_size=10)
 
         # Store latest point cloud and range image
         self.latest_pcl = None
@@ -197,29 +197,23 @@ class HandSegmentation:
             #checking mask coverage
             print(f"Mask Coverage: {mask_bool.sum()} / {mask_bool.size}")
 
-
-            ''' Passing staggered range image to xyz function so that we can better visualize the cloud in rviz '''
-
-            roi_range_image = np.where(mask_bool,range_image,0)
-
-            # Step 2: stagger the range image
-            destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
-
-            # Pass the cleaned image to XYZLut without nan and if possible in unit32 format
-            xyz_points = self.xyzlut(destaggered_image).reshape(-1, 3)
-
             ''' Directly passing destaggered range image to xyz function so that we can match with original point cloud
             which was destaggered when published'''
-            # roi_range_image = np.where(mask_bool,range_image,0)
-            # xyz_points = self.xyzlut(roi_range_image).reshape(-1, 3)
+            roi_range_image = np.where(mask_bool,range_image,0)
+            xyz_points = self.xyzlut(roi_range_image).reshape(-1, 3)
 
-            # Filter out invalid points post-conversion
+            # Filter out invalid points post-conversion. This variable is a destaggered range image cloud
             valid_xyz = xyz_points[~np.isnan(xyz_points).any(axis=1)]
    
             # Create a DataFrame for valid xyz points
             valid_xyz_df = pd.DataFrame(valid_xyz, columns=['x', 'y', 'z'])
             print("shape",valid_xyz_df.shape)
             valid_xyz_df.to_csv('valid_xyz_df.csv', index=False)
+
+            ''' staggering the range image to show accurate range image cloud in open3d viewer'''
+            destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
+            range_image_staggered_cloud = self.xyzlut(destaggered_image).reshape(-1, 3)
+            range_staggered_cloud_df = pd.DataFrame(range_image_staggered_cloud, columns=['x', 'y', 'z'])
 
              # Get the field information from the original point cloud
             fields = pcl_msg.fields
@@ -261,23 +255,35 @@ class HandSegmentation:
             print("shape",original_cloud_df.shape)
             original_cloud_df.to_csv('original_cloud_df.csv', index=False)
 
+            ''' creating new variable to use that to publish whole pointcloud scene in open3d'''
+            original_cloud_o3d = original_cloud_df[['x', 'y', 'z']].to_numpy(dtype=np.float32)
+
             # Find rows in valid_xyz_df where all values are zero
             zero_rows_indices = valid_xyz_df[(valid_xyz_df == 0.0).all(axis=1)].index
 
             # Set corresponding rows in original_cloud_df to zero
             original_cloud_df.iloc[zero_rows_indices] = 0
 
+            ''' Creating a new variable to store the filtered segmented cloud from original cloud data'''
             original_cloud_filtered = original_cloud_df
             # Save matched rows to a CSV file
             original_cloud_filtered.to_csv('original_segmented_cloud.csv', index=False)
 
+
+
             # Publishing Matched Rows as PointCloud2
             if not original_cloud_filtered.empty:
                 
+                # To Project the original cloud
+                
+                original_cloud=o3d.geometry.PointCloud()
+                original_cloud.points = o3d.utility.Vector3dVector(original_cloud_o3d)
 
                 # Visualize the segmented original cloud and also range image cloud in open3d
                 matched_points_np = original_cloud_filtered[['x', 'y', 'z']].to_numpy(dtype=np.float32)
-                valid_xyz_np = valid_xyz_df.to_numpy(dtype=np.float32)
+
+                ''' Change the value below to visualize staggered or destaggered range image in the open3d viewer'''
+                valid_xyz_np = range_staggered_cloud_df.to_numpy(dtype=np.float32)
 
                 original_segmented_cloud = o3d.geometry.PointCloud()
                 range_image_cloud = o3d.geometry.PointCloud()
@@ -285,25 +291,30 @@ class HandSegmentation:
                 range_image_cloud.points = o3d.utility.Vector3dVector(valid_xyz_np)
 
                 # Add Colors (R, G, B) in range [0, 1]
-                original_segmented_cloud_color = [1, 0, 0]  # Red for matched cloud
-                range_image_cloud_color = [0, 1, 0]  # Green for range image cloud
+                original_segmented_cloud.paint_uniform_color([1, 0, 1]) # Red for original segmented cloud
+                range_image_cloud.paint_uniform_color([0, 1, 0])  # Green for range image cloud
+                original_cloud.paint_uniform_color([1,0, 0])# Blue for original cloud
+                
 
-                original_segmented_cloud.colors = o3d.utility.Vector3dVector(np.tile(original_segmented_cloud_color, (matched_points_np.shape[0], 1)))
-                range_image_cloud.colors = o3d.utility.Vector3dVector(np.tile(range_image_cloud_color, (valid_xyz_np.shape[0], 1)))
-
-                o3d.visualization.draw_geometries([original_segmented_cloud, range_image_cloud,])
+                o3d.visualization.draw_geometries([original_segmented_cloud, range_image_cloud, original_cloud])
+               
 
 
                 # Convert matched rows DataFrame to structured array
-                filtered_points = original_segmented_cloud.to_records(index=False)
+                filtered_points = original_cloud_filtered.to_records(index=False)
 
                 # Define PointCloud2 fields
-                pc2_fields = []
-                offset = 0
-                for field in fields:
-                    if field.name in original_segmented_cloud.columns:
-                        pc2_fields.append(PointField(name=field.name, offset=offset, datatype=field.datatype, count=1))
-                        offset += np.dtype(dtype_list[field_names.index(field.name)][1]).itemsize
+                pc2_fields = [
+                    PointField('x', 0, PointField.FLOAT32, 1),
+                    PointField('y', 4, PointField.FLOAT32, 1),
+                    PointField('z', 8, PointField.FLOAT32, 1),
+                    PointField('intensity', 12, PointField.FLOAT32, 1),
+                    PointField('t', 16, PointField.UINT32, 1),
+                    PointField('reflectivity', 16, PointField.UINT16, 1),
+                    PointField('ring', 20, PointField.UINT16, 1),
+                    PointField('ambient', 22, PointField.UINT16, 1),
+                    PointField('range', 26, PointField.UINT32, 1)
+                ]
 
                 # Create PointCloud2 message
                 header = pcl_msg.header
