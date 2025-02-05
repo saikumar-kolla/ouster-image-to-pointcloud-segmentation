@@ -118,7 +118,7 @@ class HandSegmentation:
                         detected = True
 
             if detected:
-                self.visualize_mask(combined_mask)
+                #self.visualize_mask(combined_mask)
                 rospy.loginfo("Chest region mask created successfully.")
 
                 if self.latest_pcl is not None and self.latest_range_image is not None:
@@ -218,8 +218,6 @@ class HandSegmentation:
              # Get the field information from the original point cloud
             fields = pcl_msg.fields
             field_names = [field.name for field in fields]
-            rospy.loginfo(f"Original point cloud fields: {field_names}")
-
 
             # Convert original point cloud to structured numpy array
             original_cloud_points = list(pc2.read_points(pcl_msg, skip_nans=False, field_names=field_names))
@@ -248,15 +246,12 @@ class HandSegmentation:
             original_cloud_array = np.array(original_cloud_points, dtype=dtype_list)  
             rospy.loginfo("converted pcl_msg to structured numpy array") 
 
-            print(f"{dtype_list}")
-
             # Create a DataFrame for the original cloud
             original_cloud_df = pd.DataFrame(original_cloud_array)
-            print("shape",original_cloud_df.shape)
-            original_cloud_df.to_csv('original_cloud_df.csv', index=False)
-
             ''' creating new variable to use that to publish whole pointcloud scene in open3d'''
             original_cloud_o3d = original_cloud_df[['x', 'y', 'z']].to_numpy(dtype=np.float32)
+            print("shape",original_cloud_df.shape)
+            original_cloud_df.to_csv('original_cloud_df.csv', index=False)
 
             # Find rows in valid_xyz_df where all values are zero
             zero_rows_indices = valid_xyz_df[(valid_xyz_df == 0.0).all(axis=1)].index
@@ -264,7 +259,7 @@ class HandSegmentation:
             # Set corresponding rows in original_cloud_df to zero
             original_cloud_df.iloc[zero_rows_indices] = 0
 
-            ''' Creating a new variable to store the filtered segmented cloud from original cloud data'''
+            ''' Creating a new variable to store the segmented cloud from original cloud data'''
             original_cloud_filtered = original_cloud_df
             # Save matched rows to a CSV file
             original_cloud_filtered.to_csv('original_segmented_cloud.csv', index=False)
@@ -296,12 +291,16 @@ class HandSegmentation:
                 original_cloud.paint_uniform_color([1,0, 0])# Blue for original cloud
                 
 
-                o3d.visualization.draw_geometries([original_segmented_cloud, range_image_cloud, original_cloud])
+                o3d.visualization.draw_geometries([original_segmented_cloud, range_image_cloud])
                
 
+                ''' Publishing the segmented cloud with all fields to ROS'''
+                # Filter out rows where all values are zero
+                non_zero_filtered_points = original_cloud_filtered[(original_cloud_filtered != 0).any(axis=1)]
 
-                # Convert matched rows DataFrame to structured array
-                filtered_points = original_cloud_filtered.to_records(index=False)
+                # Convert the filtered DataFrame to a structured array
+                filtered_points = non_zero_filtered_points.to_records(index=False)
+
 
                 # Define PointCloud2 fields
                 pc2_fields = [
@@ -330,7 +329,6 @@ class HandSegmentation:
             rospy.logerr(f"Error extracting filtered points: {e}")
             rospy.logerr(f"Error details: {type(e).__name__}, {str(e)}")
             return None
-
 
 
 
