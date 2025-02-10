@@ -124,15 +124,6 @@ class HandSegmentation:
                 if self.latest_pcl is not None and self.latest_range_image is not None:
                     self.extract_filtered_points(combined_mask, self.latest_range_image, self.latest_pcl)
 
-                    # # Define the save location and ensure the directory exists
-                    # file_path = os.path.expanduser("~/mannequin_detection/extracted_clouds/front/filtered_chest_points.ply")
-                    # os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-                    # # Save the point cloud to a file
-                    # o3d.io.write_point_cloud(file_path, o3d_cloud)
-                    # rospy.loginfo(f"Filtered chest points saved successfully to {file_path}.")
-                
-
                 else:
                     rospy.logwarn("No point cloud or range image data available.")
 
@@ -215,6 +206,9 @@ class HandSegmentation:
             range_image_staggered_cloud = self.xyzlut(destaggered_image).reshape(-1, 3)
             range_staggered_cloud_df = pd.DataFrame(range_image_staggered_cloud, columns=['x', 'y', 'z'])
 
+                        # filter out points if x is greater than 3.5
+            range_staggered_cloud_df = range_staggered_cloud_df[range_staggered_cloud_df['x'] < 3.5]
+
              # Get the field information from the original point cloud
             fields = pcl_msg.fields
             field_names = [field.name for field in fields]
@@ -261,10 +255,13 @@ class HandSegmentation:
 
             ''' Creating a new variable to store the segmented cloud from original cloud data'''
             original_cloud_filtered = original_cloud_df
+
+            """ Filter the cloud to remove points behind the mannequin """
+            # filter out points if x is greater than 3.5
+            original_cloud_filtered = original_cloud_filtered[original_cloud_filtered['x'] < 3.5]
+
             # Save matched rows to a CSV file
             original_cloud_filtered.to_csv('original_segmented_cloud.csv', index=False)
-
-
 
             # Publishing Matched Rows as PointCloud2
             if not original_cloud_filtered.empty:
@@ -281,17 +278,25 @@ class HandSegmentation:
                 valid_xyz_np = range_staggered_cloud_df.to_numpy(dtype=np.float32)
 
                 original_segmented_cloud = o3d.geometry.PointCloud()
-                range_image_cloud = o3d.geometry.PointCloud()
+                range_image_segmented_cloud = o3d.geometry.PointCloud()
                 original_segmented_cloud.points = o3d.utility.Vector3dVector(matched_points_np)
-                range_image_cloud.points = o3d.utility.Vector3dVector(valid_xyz_np)
+                range_image_segmented_cloud.points = o3d.utility.Vector3dVector(valid_xyz_np)
 
                 # Add Colors (R, G, B) in range [0, 1]
-                original_segmented_cloud.paint_uniform_color([1, 0, 1]) # Red for original segmented cloud
-                range_image_cloud.paint_uniform_color([0, 1, 0])  # Green for range image cloud
-                original_cloud.paint_uniform_color([1,0, 0])# Blue for original cloud
-                
+                original_segmented_cloud.paint_uniform_color([1, 0, 0]) # Red for original segmented cloud
+                range_image_segmented_cloud.paint_uniform_color([0, 0, 1])  # Green for range image cloud
+                original_cloud.paint_uniform_color([0,1, 0])# Blue for original cloud
 
-                o3d.visualization.draw_geometries([original_segmented_cloud, range_image_cloud])
+                o3d.visualization.draw_geometries([original_segmented_cloud, range_image_segmented_cloud])
+
+                # Define the save location and ensure the directory exists
+                file_path = os.path.expanduser("~/mannequin_detection/extracted_clouds/front/filtered_chest_points.ply")
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+                # Save the point cloud to a file
+                o3d.io.write_point_cloud(file_path, original_segmented_cloud)
+                rospy.loginfo(f"Filtered chest points saved successfully to {file_path}.")
+                
                
 
                 ''' Publishing the segmented cloud with all fields to ROS'''
@@ -319,7 +324,7 @@ class HandSegmentation:
                 header = pcl_msg.header
                 filtered_cloud = pc2.create_cloud(header, pc2_fields, filtered_points)
                 self.chest_pub.publish(filtered_cloud)
-                rospy.loginfo("Filtered chest points published successfully.")
+                rospy.loginfo("Chest points published successfully.")
             else:
                 rospy.logwarn("No points matched. No point cloud published.")
                 return None    

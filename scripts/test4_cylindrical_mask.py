@@ -121,11 +121,6 @@ class HandSegmentation:
                 if self.latest_pcl is not None and self.latest_range_image is not None:
                     self.extract_filtered_points(combined_mask, self.latest_range_image, self.latest_pcl)
                     
-                    
-
-
-                
-
                 else:
                     rospy.logwarn("No point cloud or range image data available.")
 
@@ -230,35 +225,29 @@ class HandSegmentation:
             #checking mask coverage
             print(f"Mask Coverage: {mask_bool.sum()} / {mask_bool.size}")
 
-
-            ''' Passing staggered range image to xyz function so that we can better visualize the cloud in rviz '''
-
-            # roi_range_image = np.where(mask_bool,range_image,0)
-
-            # # Step 2: stagger the range image
-            # destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
-
-            # # Pass the cleaned image to XYZLut without nan and if possible in unit32 format
-            # xyz_points = self.xyzlut(destaggered_image).reshape(-1, 3)
-
             ''' Directly passing destaggered range image to xyz function so that we can match with original point cloud
             which was destaggered when published'''
             roi_range_image = np.where(mask_bool,range_image,0)
             xyz_points = self.xyzlut(roi_range_image).reshape(-1, 3)
 
-            # Filter out invalid points post-conversion
+            # Filter out invalid points post-conversion. This variable is a destaggered range image cloud
             valid_xyz = xyz_points[~np.isnan(xyz_points).any(axis=1)]
    
             # Create a DataFrame for valid xyz points
             valid_xyz_df = pd.DataFrame(valid_xyz, columns=['x', 'y', 'z'])
             print("shape",valid_xyz_df.shape)
-            # valid_xyz_df.to_csv('valid_xyz_df.csv', index=False)
+
+            ''' staggering the range image to show accurate range image cloud in open3d viewer'''
+            destaggered_image = client.destagger(self.sensor_info, roi_range_image, inverse=True)
+            range_image_staggered_cloud = self.xyzlut(destaggered_image).reshape(-1, 3)
+            range_staggered_cloud_df = pd.DataFrame(range_image_staggered_cloud, columns=['x', 'y', 'z'])
+            # filter out points if x is greater than 3.5
+            range_staggered_cloud_df = range_staggered_cloud_df[range_staggered_cloud_df['x'] < 3.5]
+
 
              # Get the field information from the original point cloud
             fields = pcl_msg.fields
             field_names = [field.name for field in fields]
-            rospy.loginfo(f"Original point cloud fields: {field_names}")
-
 
             # Convert original point cloud to structured numpy array
             original_cloud_points = list(pc2.read_points(pcl_msg, skip_nans=False, field_names=field_names))
@@ -287,12 +276,11 @@ class HandSegmentation:
             original_cloud_array = np.array(original_cloud_points, dtype=dtype_list)  
             rospy.loginfo("converted pcl_msg to structured numpy array") 
 
-            print(f"{dtype_list}")
-
             # Create a DataFrame for the original cloud
             original_cloud_df = pd.DataFrame(original_cloud_array)
+            ''' creating new variable to use that to publish whole pointcloud scene in open3d'''
+            original_cloud_o3d = original_cloud_df[['x', 'y', 'z']].to_numpy(dtype=np.float32)
             print("shape",original_cloud_df.shape)
-            original_cloud_df.to_csv('original_cloud_df.csv', index=False)
 
             # Find rows in valid_xyz_df where all values are zero
             zero_rows_indices = valid_xyz_df[(valid_xyz_df == 0.0).all(axis=1)].index
@@ -300,17 +288,26 @@ class HandSegmentation:
             # Set corresponding rows in original_cloud_df to zero
             original_cloud_df.iloc[zero_rows_indices] = 0
 
+            ''' Creating a new variable to store the segmented cloud from original cloud data'''
             original_cloud_filtered = original_cloud_df
-            # # Save matched rows to a CSV file
-            # original_cloud_filtered.to_csv('original_segmented_cloud.csv', index=False)
+
+            """ Filter the cloud to remove points behind the mannequin """
+            # filter out points if x is greater than 3.5
+            original_cloud_filtered = original_cloud_filtered[original_cloud_filtered['x'] < 3.5]
 
             # Publishing Matched Rows as PointCloud2
             if not original_cloud_filtered.empty:
                 
+                # To Project the original cloud
+                
+                original_cloud=o3d.geometry.PointCloud()
+                original_cloud.points = o3d.utility.Vector3dVector(original_cloud_o3d)
 
                 # Visualize the segmented original cloud and also range image cloud in open3d
                 matched_points_np = original_cloud_filtered[['x', 'y', 'z']].to_numpy(dtype=np.float32)
-                valid_xyz_np = valid_xyz_df.to_numpy(dtype=np.float32)
+
+                ''' Change the value below to visualize staggered or destaggered range image in the open3d viewer'''
+                valid_xyz_np = range_staggered_cloud_df.to_numpy(dtype=np.float32)
 
                 original_segmented_cloud = o3d.geometry.PointCloud()
                 range_image_cloud = o3d.geometry.PointCloud()
@@ -318,17 +315,27 @@ class HandSegmentation:
                 range_image_cloud.points = o3d.utility.Vector3dVector(valid_xyz_np)
 
                 # Add Colors (R, G, B) in range [0, 1]
-                original_segmented_cloud_color = [1, 0, 0]  # Red for matched cloud
-                range_image_cloud_color = [0, 1, 0]  # Green for range image cloud
+                original_segmented_cloud.paint_uniform_color([1, 0, 0]) # Red for original segmented cloud
+                range_image_cloud.paint_uniform_color([0, 1, 0])  # Green for range image cloud
+                original_cloud.paint_uniform_color([0,0, 0])# Black for original cloud
 
-                original_segmented_cloud.colors = o3d.utility.Vector3dVector(np.tile(original_segmented_cloud_color, (matched_points_np.shape[0], 1)))
-                range_image_cloud.colors = o3d.utility.Vector3dVector(np.tile(range_image_cloud_color, (valid_xyz_np.shape[0], 1)))
+                o3d.visualization.draw_geometries([original_segmented_cloud, range_image_cloud])
 
-                o3d.visualization.draw_geometries([original_segmented_cloud, range_image_cloud,])
+                # Define the save location and ensure the directory exists
+                file_path = os.path.expanduser("~/mannequin_detection/extracted_clouds/front/filtered_hand_points.ply")
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
+                # Save the point cloud to a file
+                o3d.io.write_point_cloud(file_path, original_segmented_cloud)
+                rospy.loginfo(f"Filtered hand points saved successfully to {file_path}.")
+ 
+                ''' Publishing the segmented cloud with all fields to ROS'''
+                # Filter out rows where all values are zero
+                non_zero_filtered_points = original_cloud_filtered[(original_cloud_filtered != 0).any(axis=1)]
 
-                # Convert matched rows DataFrame to structured array
-                filtered_points = original_segmented_cloud.to_records(index=False)
+                # Convert the filtered DataFrame to a structured array
+                filtered_points = non_zero_filtered_points.to_records(index=False)
+
 
                 # Define PointCloud2 fields
                 pc2_fields = [
@@ -347,7 +354,7 @@ class HandSegmentation:
                 header = pcl_msg.header
                 filtered_cloud = pc2.create_cloud(header, pc2_fields, filtered_points)
                 self.hand_pub.publish(filtered_cloud)
-                rospy.loginfo("Filtered chest points published successfully.")
+                rospy.loginfo("Hand points published successfully.")
             else:
                 rospy.logwarn("No points matched. No point cloud published.")
                 return None    
